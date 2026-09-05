@@ -104,10 +104,54 @@
     transition:opacity .2s,transform .2s;z-index:99;max-width:82vw;text-align:center;
   }
   #status.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  /* 桌面/宽屏下顶栏常驻；编辑面板独立于顶栏成一条全宽横条 */
+  #panel{
+    display:none;align-items:center;gap:8px;padding:6px 12px;flex-wrap:wrap;
+    background:rgba(4,20,12,.9);border-bottom:1px solid rgba(255,255,255,.12);
+  }
+  #panel.show{display:flex}
+  /* 手机悬浮快捷栏（默认只在窄屏显示） */
+  #mobileBar{
+    position:fixed;top:calc(6px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);
+    z-index:60;display:none;gap:6px;padding:5px;
+    background:rgba(4,20,12,.82);border:1px solid rgba(255,255,255,.22);
+    border-radius:12px;backdrop-filter:blur(6px);
+  }
+  #mobileBar button{
+    width:42px;height:42px;font-size:19px;display:flex;align-items:center;justify-content:center;
+    padding:0;border-radius:9px;
+  }
+  #mobileBar button.on{background:#22c55e;color:#062b14}
+  @media (max-width: 780px){
+    /* 顶栏默认收起：悬浮在上方，点 ☰ 展开 */
+    header{
+      position:fixed;top:0;left:0;right:0;z-index:50;
+      transform:translateY(-103%);transition:transform .25s ease;
+      max-height:64vh;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.45);
+    }
+    header.show{transform:translateY(0)}
+    #mobileBar{display:flex}
+    main{padding:60px 8px 10px}
+    /* 球员编辑面板：底部浮层，不随顶栏隐藏 */
+    #panel{
+      position:fixed;left:8px;right:8px;
+      bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:80;
+      border-radius:12px;border:1px solid rgba(255,255,255,.22);
+      justify-content:center;
+    }
+    footer{display:none}
+    #status{bottom:calc(56px + env(safe-area-inset-bottom,0px))}
+  }
 </style>
 </head>
 <body>
-<header>
+<div id="mobileBar" aria-label="快捷操作">
+  <button id="mMenuBtn" title="展开/收起控制栏">☰</button>
+  <button id="mVoiceBtn" title="语音控制">🎤</button>
+  <button id="mBallBtn" title="显示/隐藏足球">⚽</button>
+  <button id="mFullBtn" title="全屏">⛶</button>
+</div>
+<header id="topbar">
   <div class="row">
     <div class="grp">
       <span class="lbl">赛制</span>
@@ -146,14 +190,15 @@
       <button id="resetBtn" class="ghost danger">重置本赛制</button>
     </div>
   </div>
-  <div id="panel">
-    <span id="selTag"></span>
-    <label class="in">号码 <input type="number" id="inpNum" min="1" max="99"></label>
-    <label class="in">名字 <input type="text" id="inpName" maxlength="12" placeholder="球员姓名"></label>
-    <button id="delBtn" class="danger">删除</button>
-    <button id="cancelSel" class="ghost">取消选中</button>
-  </div>
 </header>
+
+<div id="panel">
+  <span id="selTag"></span>
+  <label class="in">号码 <input type="number" id="inpNum" min="1" max="99"></label>
+  <label class="in">名字 <input type="text" id="inpName" maxlength="12" placeholder="球员姓名"></label>
+  <button id="delBtn" class="danger">删除</button>
+  <button id="cancelSel" class="ghost">取消选中</button>
+</div>
 
 <main id="stage">
   <div id="board">
@@ -1058,17 +1103,24 @@ function parseCmd(raw){
 /* ================= 语音 ================= */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, voiceOn = false, keepListen = false, lastCmd = "", lastCmdAt = 0;
-function voiceUI(on, listening){
+function voiceUI(on){
   voiceBtn.classList.toggle("on", on);
   voiceBtn.textContent = on ? "🔴 聆听中·点击停止" : "🎤 语音控制";
   vstate.textContent = on ? "聆听中" : (SR ? "未开启" : "不支持");
+  const mb = document.getElementById("mVoiceBtn");
+  if (mb) {
+    mb.classList.toggle("on", on);
+    mb.textContent = on ? "⏹" : "🎤";
+    mb.title = on ? "停止聆听" : "开始语音控制";
+  }
 }
 function startVoice(){
-  if (!SR) return toast("此浏览器不支持语音识别，请使用 Chrome 或 Edge");
+  if (!SR) return toast("当前浏览器不支持语音识别：请用 Chrome 或 Edge 打开 https 页面并允许麦克风");
+  if (voiceOn) { stopVoice(); return; }
   if (!rec) {
     rec = new SR();
     rec.lang = "zh-CN";
-    rec.continuous = false;   // 每次识别完自动重启，避免 Chrome 连续模式“第二句失灵”
+    rec.continuous = false;   // 每次识别完自动重启，避免连续模式“第二句失灵”
     rec.interimResults = false;
     rec.onresult = e => {
       let t = "";
@@ -1077,25 +1129,79 @@ function startVoice(){
     };
     rec.onerror = e => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        toast("麦克风权限被拒或服务不可用：请允许麦克风；若用 file:// 打开可能受限，可改用本地服务器");
-        keepListen = false;
+        toast("麦克风权限被拒或服务不可用：请在浏览器地址栏左侧允许麦克风（需要 https 页面）");
+        voiceOn = false; keepListen = false;
         voiceUI(false);
       }
     };
     rec.onend = () => {
+      voiceOn = false;
       voiceUI(false);
-      if (keepListen) setTimeout(() => { if (keepListen) { try { rec.start(); voiceUI(true); } catch (e) {} } }, 350);
+      if (keepListen) setTimeout(() => {
+        if (keepListen) {
+          try { rec.start(); voiceOn = true; voiceUI(true); } catch (e) { voiceOn = false; voiceUI(false); }
+        }
+      }, 300);
     };
   }
   keepListen = true;
-  try { rec.start(); voiceUI(true); } catch (e) { keepListen = false; }
+  try {
+    rec.start();
+    voiceOn = true;
+    voiceUI(true);
+  } catch (e) {
+    voiceOn = false; keepListen = false;
+    voiceUI(false);
+    toast("启动语音失败：请允许麦克风后重试");
+  }
 }
 function stopVoice(){
+  voiceOn = false;
   keepListen = false;
   try { rec && rec.stop(); } catch (e) {}
   voiceUI(false);
 }
 voiceBtn.addEventListener("click", () => { if (voiceOn) stopVoice(); else startVoice(); });
+
+/* 手机悬浮快捷栏：菜单展开/收起、语音、足球、全屏 */
+(function () {
+  const headerEl = document.querySelector("header");
+  const menuBtn = document.getElementById("mMenuBtn");
+  const ballBtn = document.getElementById("mBallBtn");
+  const fullBtn = document.getElementById("mFullBtn");
+  const mVoice = document.getElementById("mVoiceBtn");
+
+  if (menuBtn && headerEl) {
+    menuBtn.addEventListener("click", () => {
+      const open = headerEl.classList.toggle("show");
+      menuBtn.classList.toggle("on", open);
+      menuBtn.textContent = open ? "✕" : "☰";
+    });
+  }
+  if (ballBtn) {
+    const syncBall = () => ballBtn.classList.toggle("on", !!showBallChk.checked);
+    ballBtn.addEventListener("click", () => {
+      showBallChk.checked = !showBallChk.checked;
+      showBallChk.dispatchEvent(new Event("change"));
+      syncBall();
+    });
+    syncBall();
+  }
+  if (mVoice) mVoice.addEventListener("click", () => { if (voiceOn) stopVoice(); else startVoice(); });
+  if (fullBtn) {
+    fullBtn.addEventListener("click", () => {
+      if (document.fullscreenElement) {
+        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+        fullBtn.textContent = "⛶";
+      } else if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().then(() => { fullBtn.textContent = "⛶✕"; })
+          .catch(() => toast("无法全屏：浏览器未允许"));
+      } else {
+        toast("当前浏览器不支持全屏");
+      }
+    });
+  }
+})();
 
 let voicePending = "", voiceTimer = null, voicePendingAt = 0;
 function allVoiceReady(s){

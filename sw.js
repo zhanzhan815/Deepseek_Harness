@@ -25,6 +25,18 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
+  // 页面(导航)请求：优先网络，失败才用缓存 → 更新后刷新即可看到新版
+  if (req.mode === "navigate") {
+    e.respondWith(
+      fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy));
+        return res;
+      }).catch(() => caches.match(req).then((hit) => hit || caches.match("./index.html")))
+    );
+    return;
+  }
+  // 静态资源：缓存优先 + 后台更新
   e.respondWith(
     caches.match(req).then((hit) => {
       if (hit) return hit;
