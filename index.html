@@ -94,6 +94,10 @@
     filter:drop-shadow(0 2px 3px rgba(0,0,0,.55));
   }
   .ball svg{width:calc(27px * var(--s,1));height:calc(27px * var(--s,1));pointer-events:none;display:block}
+  /* 竖版球场：整板旋转 90°，球员/足球文字反向转回正立 */
+  #board.v{transform:rotate(90deg)}
+  #board.v .chip{transform:translate(-50%,-50%) rotate(-90deg)}
+  #board.v .ball{transform:translate(-50%,-50%) rotate(-90deg)}
   .tmpFade{animation:tmpFade .95s ease forwards}
   @keyframes tmpFade{from{opacity:1}to{opacity:0}}
   footer{text-align:center;font-size:12px;color:#8fbea2;padding:5px;background:rgba(4,20,12,.6)}
@@ -116,6 +120,7 @@
     z-index:60;display:none;gap:6px;padding:5px;
     background:rgba(4,20,12,.82);border:1px solid rgba(255,255,255,.22);
     border-radius:12px;backdrop-filter:blur(6px);
+    box-shadow:0 6px 18px rgba(0,0,0,.4);
   }
   #mobileBar button{
     width:42px;height:42px;font-size:19px;display:flex;align-items:center;justify-content:center;
@@ -128,9 +133,13 @@
       position:fixed;top:0;left:0;right:0;z-index:50;
       transform:translateY(-103%);transition:transform .25s ease;
       max-height:64vh;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.45);
+      padding-top:env(safe-area-inset-top,0px);
     }
     header.show{transform:translateY(0)}
     #mobileBar{display:flex}
+    /* 菜单展开时，悬浮栏下移，避免挡住顶栏内容 */
+    body.menuOpen #mobileBar{top:calc(64vh + 8px + env(safe-area-inset-top,0px))}
+    body.menuOpen #mobileBar button{box-shadow:0 2px 8px rgba(0,0,0,.5)}
     main{padding:60px 8px 10px}
     /* 球员编辑面板：底部浮层，不随顶栏隐藏 */
     #panel{
@@ -149,6 +158,7 @@
   <button id="mMenuBtn" title="展开/收起控制栏">☰</button>
   <button id="mVoiceBtn" title="语音控制">🎤</button>
   <button id="mBallBtn" title="显示/隐藏足球">⚽</button>
+  <button id="mRotBtn" title="切换横版/竖版球场">⇄</button>
   <button id="mFullBtn" title="全屏">⛶</button>
 </div>
 <header id="topbar">
@@ -281,6 +291,7 @@ let players = [], annotations = [], ball = { x: 50, y: 50, show: false };
 let lastFm = { home: "4-4-2", away: "4-4-2" };
 let selectedId = null, lineDraft = null, activeTeam = "home";
 let drag = null, animBusy = false, seq = 1000, UI_S = 1;
+let isVertical = false, orientManual = false;
 
 const $ = s => document.querySelector(s);
 const numOf = p => { const n = Number(p.num); return Number.isFinite(n) && n > 0 ? n : 99; };
@@ -683,9 +694,14 @@ function chipTap(id){
 /* ================= 拖拽 ================= */
 function pitchFromEvent(e){
   const r = boardEl.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const dx = e.clientX - cx, dy = e.clientY - cy;
+  // 竖版时整板顺时针转了 90°，指针坐标要逆旋转回局部坐标系
+  const lx = isVertical ? dy : dx;
+  const ly = isVertical ? -dx : dy;
   return {
-    x: boardPctToPitchX((e.clientX - r.left) / r.width * 100),
-    y: (e.clientY - r.top) / r.height * 100
+    x: boardPctToPitchX(lx / boardEl.offsetWidth * 100),
+    y: ly / boardEl.offsetHeight * 100
   };
 }
 boardEl.addEventListener("pointerdown", e => {
@@ -1170,13 +1186,24 @@ voiceBtn.addEventListener("click", () => { if (voiceOn) stopVoice(); else startV
   const ballBtn = document.getElementById("mBallBtn");
   const fullBtn = document.getElementById("mFullBtn");
   const mVoice = document.getElementById("mVoiceBtn");
+  const rotBtn = document.getElementById("mRotBtn");
 
   if (menuBtn && headerEl) {
     menuBtn.addEventListener("click", () => {
       const open = headerEl.classList.toggle("show");
+      document.body.classList.toggle("menuOpen", open); // 悬浮栏让位，不挡展开的选项
       menuBtn.classList.toggle("on", open);
       menuBtn.textContent = open ? "✕" : "☰";
     });
+    // 在顶栏里点完选项后不自动收起，用户按 ✕ 收起；点球场空白处也可收起
+    boardEl.addEventListener("pointerdown", () => {
+      if (headerEl.classList.contains("show")) {
+        headerEl.classList.remove("show");
+        document.body.classList.remove("menuOpen");
+        menuBtn.classList.remove("on");
+        menuBtn.textContent = "☰";
+      }
+    }, true);
   }
   if (ballBtn) {
     const syncBall = () => ballBtn.classList.toggle("on", !!showBallChk.checked);
@@ -1188,6 +1215,13 @@ voiceBtn.addEventListener("click", () => { if (voiceOn) stopVoice(); else startV
     syncBall();
   }
   if (mVoice) mVoice.addEventListener("click", () => { if (voiceOn) stopVoice(); else startVoice(); });
+  if (rotBtn) {
+    rotBtn.addEventListener("click", () => {
+      setOrientation(false, !isVertical);
+      fit();
+    });
+    rotBtn.classList.toggle("on", isVertical);
+  }
   if (fullBtn) {
     fullBtn.addEventListener("click", () => {
       if (document.fullscreenElement) {
@@ -1298,13 +1332,32 @@ function fit(){
   const c = PITCHES[fmt];
   const ratio = (c.L * U + 2 * c.gd) / (c.W * U);
   const aw = stageEl.clientWidth - pad * 2, ah = stageEl.clientHeight - pad * 2;
-  const w = Math.min(aw, ah * ratio);
-  boardEl.style.width = Math.max(240, w) + "px";
-  UI_S = Math.max(0.55, Math.min(1.9, w / 1150));
+  let W;
+  if (isVertical) {
+    // 竖版：旋转 90° 后可视宽=板高(=W/ratio)，可视高=板宽 W，需都装进舞台
+    W = Math.min(aw * ratio, ah);
+  } else {
+    W = Math.min(aw, ah * ratio);
+  }
+  W = Math.max(240, W);
+  boardEl.style.width = W + "px";
+  const effW = isVertical ? W / ratio : W;
+  UI_S = Math.max(0.55, Math.min(1.9, effW / 1150));
   document.documentElement.style.setProperty("--s", UI_S.toFixed(3));
   requestAnimationFrame(refreshLines);
 }
-window.addEventListener("resize", fit);
+function setOrientation(autoFollow, vert){
+  orientManual = !autoFollow;
+  if (autoFollow) isVertical = window.innerHeight > window.innerWidth;
+  else if (vert != null) isVertical = vert;
+  boardEl.classList.toggle("v", isVertical);
+  const rBtn = document.getElementById("mRotBtn");
+  if (rBtn) {
+    rBtn.classList.toggle("on", isVertical);
+    rBtn.textContent = isVertical ? "⇆" : "⇄";
+  }
+}
+window.addEventListener("resize", () => { if (!orientManual) setOrientation(true); fit(); });
 
 function setFormat(f){
   if (f === fmt) return;
@@ -1361,6 +1414,7 @@ function init(){
   buildPitch();
   renderPlayers(); refreshLines();
   voiceUI(false);
+  setOrientation(true);
   requestAnimationFrame(fit);
 }
 init();
